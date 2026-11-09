@@ -86,6 +86,11 @@ const envSchema = z.object({
     .optional()
     .transform((val) => val === "true" || val === "1")
     .prefault("false"),
+  ENABLE_COMMANDS_SCRIPT: z
+    .string()
+    .optional()
+    .transform((val) => val === "true" || val === "1")
+    .prefault("false"),
 });
 
 export const env = envSchema.parse(process.env);

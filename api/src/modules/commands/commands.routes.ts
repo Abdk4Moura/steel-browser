@@ -1,4 +1,5 @@
 import { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { env } from "../../env.js";
 import { COMMANDS_API_VERSION, requestJsonSchema } from "../../services/commands/commands.js";
 import { CommandEngine, type EngineResponse } from "../../services/commands/engine.js";
 import { CommandsPlugin } from "../../services/commands/plugin.js";
@@ -7,22 +8,25 @@ import { $ref } from "../../plugins/schemas.js";
 import { quickActionsDone } from "./commands.guard.js";
 
 export function createCommandEngine(server: FastifyInstance): CommandEngine {
-  const engine: CommandEngine = new CommandEngine({
-    browser: () => server.cdpService.getBrowserInstance(),
-    waitForPageSetup: (page) => server.cdpService.waitForPageSetup(page),
-    endSession: async (id) => {
-      const session = server.sessionService.activeSession;
-      if (session.id === id && session.status === "live") {
-        await server.sessionService.endSession();
-      }
+  const engine: CommandEngine = new CommandEngine(
+    {
+      browser: () => server.cdpService.getBrowserInstance(),
+      waitForPageSetup: (page) => server.cdpService.waitForPageSetup(page),
+      endSession: async (id) => {
+        const session = server.sessionService.activeSession;
+        if (session.id === id && session.status === "live") {
+          await server.sessionService.endSession();
+        }
+      },
+      filesRoot: () => FileService.getInstance().getBaseFilesPath(),
+      released: (id) => {
+        const session = server.sessionService.activeSession;
+        return session.id !== id || session.status !== "live";
+      },
+      quickActionsDone: () => quickActionsDone(engine),
     },
-    filesRoot: () => FileService.getInstance().getBaseFilesPath(),
-    released: (id) => {
-      const session = server.sessionService.activeSession;
-      return session.id !== id || session.status !== "live";
-    },
-    quickActionsDone: () => quickActionsDone(engine),
-  });
+    { scripts: env.ENABLE_COMMANDS_SCRIPT },
+  );
   server.cdpService.registerPlugin(
     new CommandsPlugin(engine, { id: () => server.sessionService.activeSession.id }),
   );

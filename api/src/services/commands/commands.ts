@@ -7,6 +7,7 @@ import { LOCATOR_KINDS, MAX_FRAME_DEPTH } from "./targets.js";
 
 const MAX_COMMANDS = 50;
 const MAX_ITEMS = 1000;
+const MAX_SCRIPT_CHARS = 100_000;
 
 const tab = z
   .string()
@@ -192,6 +193,7 @@ export const commandSchema = z.discriminatedUnion("command", [
     tab,
     url: z.string().min(1).optional(),
   }),
+  strict({ command: z.literal("script"), code: z.string().min(1).max(MAX_SCRIPT_CHARS) }),
 ]);
 
 export type Command = z.infer<typeof commandSchema>;
@@ -286,6 +288,26 @@ const checkedCommand = commandSchema.superRefine((command, ctx) => {
 
 const commandList = z.array(checkedCommand).min(1).max(MAX_COMMANDS);
 
+export type ParsedCommand =
+  | { ok: true; name: string; command: Command }
+  | { ok: false; name: string; message: string };
+
+export function parseCommand(value: unknown): ParsedCommand {
+  const given = (value as { command?: unknown } | null)?.command;
+  const name = typeof given === "string" ? given : "unknown";
+  const parsed = checkedCommand.safeParse(value);
+  if (parsed.success) {
+    return { ok: true, name, command: parsed.data };
+  }
+  return {
+    ok: false,
+    name,
+    message: parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "command"}: ${issue.message}`)
+      .join("; "),
+  };
+}
+
 export const requestSchema = z
   .object({
     after: z.string().min(1).optional(),
@@ -350,6 +372,7 @@ const MUTATING = new Set([
   "keyup",
   "mouse",
   "eval",
+  "script",
 ]);
 
 export function isMutating(command: Command): boolean {

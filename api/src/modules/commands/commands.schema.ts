@@ -98,6 +98,34 @@ const RESULT_FIELDS = {
     tabs: z.array(z.object({ tab: z.string(), url: z.string(), title: z.string() })).optional(),
     tab: z.string().optional(),
   },
+  script: {
+    value: z.unknown().optional().describe("The value the script returned, as JSON."),
+    emitted: z
+      .array(z.unknown())
+      .optional()
+      .describe("Values passed to emit(). They are kept when the script fails."),
+    logs: z.array(z.string()).optional().describe("Output of console.log."),
+    logsTruncated: z.boolean().optional(),
+    calls: z.number().int().optional().describe("Commands the script ran."),
+    trace: z
+      .array(
+        z.object({
+          line: z.number().int().optional(),
+          call: z.string(),
+          ok: z.boolean(),
+          effect: Effect,
+          ms: z.number(),
+        }),
+      )
+      .optional()
+      .describe("The last commands the script ran."),
+    traceOmitted: z.number().int().optional(),
+    error: ErrorInfo.extend({
+      line: z.number().int().optional().describe("The line of the script that failed."),
+      call: z.string().optional().describe("The command that failed."),
+      effect: Effect.optional().describe("What the failed command did to the page."),
+    }).optional(),
+  },
 };
 
 type ResultName = keyof typeof RESULT_FIELDS;

@@ -29,6 +29,7 @@ import {
 } from "./legacy.js";
 import { isFinal, type ErrorInfo, type Execution, type ExecutionState } from "./records.js";
 import { combine, errorInfo, within } from "./results.js";
+import { runScript } from "./scripts.js";
 import {
   ActiveSession,
   Counters,
@@ -55,7 +56,10 @@ const MAX_IDEMPOTENCY_KEY = 255;
 export interface EngineOptions {
   limits?: Partial<EngineLimits>;
   now?: () => number;
+  scripts?: boolean;
 }
+
+type ScriptCommand = Extract<Command, { command: "script" }>;
 
 export interface EngineRequest {
   sessionId: string;
@@ -77,6 +81,7 @@ export class CommandEngine {
   private ready = false;
   private readonly limits: EngineLimits;
   private readonly now: () => number;
+  private readonly scripts: boolean;
 
   constructor(
     private readonly host: EngineHost,
@@ -84,6 +89,7 @@ export class CommandEngine {
   ) {
     this.limits = { ...DEFAULT_ENGINE_LIMITS, ...options.limits };
     this.now = options.now ?? Date.now;
+    this.scripts = options.scripts ?? false;
   }
 
   prepare(sessionId: string) {
@@ -278,6 +284,14 @@ export class CommandEngine {
     const parsed = requestSchema.safeParse(legacy.body);
     if (!parsed.success) {
       return invalid(parsed.error.issues);
+    }
+    if (parsed.data.commands.some((command) => command.command === "script")) {
+      if (!this.scripts) {
+        return failure("invalid_request", "Scripts are not enabled on this server.");
+      }
+      if (parsed.data.commands.length > 1) {
+        return failure("invalid_request", "Send a script on its own.");
+      }
     }
     active.records.sweep();
     return this.submit(active, key, parsed.data, deadline);
@@ -538,22 +552,29 @@ export class CommandEngine {
       execution.epochChanged = active.records.epochChangedSince(execution);
     }
     active.records.changed(execution);
-    for (const command of job.commands) {
-      if (await this.stopped(active, job)) {
+    const [first] = job.commands;
+    if (first?.command === "script") {
+      if (!(await this.runScript(active, job, first))) {
         return;
       }
-      job.touched = false;
-      job.tab = undefined;
-      execution.ran++;
-      const ctx = this.context(active, job);
-      const result = await this.track(active, job, command, ctx, execute(ctx, command));
-      if (!result) {
-        return;
-      }
-      execution.results.push({ command: command.command, ...result });
-      execution.effect = combine(execution.results);
-      if (!result.ok) {
-        break;
+    } else {
+      for (const command of job.commands) {
+        if (await this.stopped(active, job)) {
+          return;
+        }
+        job.touched = false;
+        job.tab = undefined;
+        execution.ran++;
+        const ctx = this.context(active, job);
+        const result = await this.track(active, job, command, ctx, execute(ctx, command));
+        if (!result) {
+          return;
+        }
+        execution.results.push({ command: command.command, ...result });
+        execution.effect = combine(execution.results);
+        if (!result.ok) {
+          break;
+        }
       }
     }
     if (job.observe && job.observe.mode !== "none") {
@@ -577,6 +598,42 @@ export class CommandEngine {
       execution,
       execution.results.every((result) => result.ok) ? "completed" : "failed",
     );
+  }
+
+  private async runScript(
+    active: ActiveSession,
+    job: Job,
+    command: ScriptCommand,
+  ): Promise<boolean> {
+    const { execution } = job;
+    if (await this.stopped(active, job)) {
+      return false;
+    }
+    execution.ran++;
+    const result = await runScript(command.code, {
+      now: this.now,
+      remainingMs: () => job.limitAt - this.now(),
+      step: async (inner) => {
+        if (await this.stopped(active, job)) {
+          return undefined;
+        }
+        job.touched = false;
+        job.tab = undefined;
+        const ctx = this.context(active, job);
+        const outcome = await this.track(active, job, inner, ctx, execute(ctx, inner));
+        if (!outcome) {
+          return undefined;
+        }
+        const info = await within(pageInfo(active, job.tab ?? execution.tab), STEP_MS);
+        return { result: outcome, page: info ? { url: info.url, title: info.title } : null };
+      },
+    });
+    if (active.ended || isFinal(execution.state)) {
+      return false;
+    }
+    execution.results.push({ command: "script", ...result });
+    execution.effect = combine(execution.results);
+    return true;
   }
 
   private context(active: ActiveSession, job: Job): Context {

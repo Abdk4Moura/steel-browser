@@ -5367,4 +5367,63 @@ describe.skipIf(!chrome)("command engine", () => {
       expect(replay.results[0].snapshot).toBeUndefined();
     });
   });
+
+  describe("scripts", () => {
+    test("refuses scripts unless they are on", async () => {
+      await refused({ command: "script", code: "return 1" }, "not enabled");
+    });
+
+    test("refuses a script sent with other commands", async () => {
+      create({ scripts: true });
+      await refused(
+        [
+          { command: "script", code: "return 1" },
+          { command: "tab", action: "list" },
+        ],
+        "on its own",
+      );
+    });
+
+    test("runs a script as one execution", async () => {
+      create({ scripts: true });
+      const body = await run({
+        command: "script",
+        code: [
+          `await page.goto(${JSON.stringify(base + "/basic")})`,
+          'await page.getByLabel("Name").fill("Jun")',
+          'await page.getByRole("button", { name: "Save" }).click()',
+          'return { title: await page.title(), name: await page.getByLabel("Name").inputValue(), url: page.url() }',
+        ].join("\n"),
+      });
+      expect(body.execution).toMatchObject({ state: "completed", effect: "applied", ran: 1 });
+      expect(body.page?.url).toBe(`${base}/basic`);
+      expect(body.results[0]).toMatchObject({
+        command: "script",
+        ok: true,
+        effect: "applied",
+        calls: 5,
+        value: { title: "saved", name: "Jun", url: `${base}/basic` },
+      });
+    });
+
+    test("stops at the failing line and keeps what ran", async () => {
+      create({ scripts: true });
+      const body = await run({
+        command: "script",
+        code: [
+          `await page.goto(${JSON.stringify(base + "/basic")})`,
+          'emit(await page.locator("h1").innerText())',
+          'await page.getByRole("button", { name: "Missing" }).click()',
+        ].join("\n"),
+      });
+      expect(body.execution.state).toBe("failed");
+      expect(body.results[0]).toMatchObject({
+        command: "script",
+        ok: false,
+        effect: "applied",
+        emitted: ["Account"],
+        error: { code: "element_not_found", line: 3, call: "click", effect: "none" },
+      });
+    });
+  });
 });
